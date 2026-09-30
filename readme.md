@@ -105,6 +105,11 @@ Retorna `204 No Content` para indicar que o processo HTTP está ativo.
 
 ## Integração com GitHub Actions
 
-O workflow em `.github/workflows/publish-job.yml` publica Issues cujo título começa com `[job]`. O corpo deve conter somente o JSON da API. Antes de usar a integração, configure `JOBS_API_TOKEN` em **Settings → Secrets and variables → Actions** no GitHub.
+O workflow em `.github/workflows/publish-job.yml` processa Issues cujo título começa com `[job]`. O corpo deve conter somente o JSON da API. Quando a API aceita a vaga e a coloca na fila com `202 Accepted`, o workflow tenta excluir a Issue permanentemente.
 
-O passo a passo, exemplos e checklist estão em [GITHUB_ACTIONS_JOB_DISPATCH.md](GITHUB_ACTIONS_JOB_DISPATCH.md).
+Configure estes Secrets em **Settings → Secrets and variables → Actions**:
+
+- `JOBS_API_TOKEN`: token Bearer usado pela API do bot.
+- `ISSUE_DELETE_TOKEN`: fine-grained personal access token criado pela conta proprietária `Zelchi`, limitado ao repositório `ping-jobs`, com permissão **Issues: Read and write**. Configure uma expiração para o token.
+
+Se o POST falhar, a Issue fica aberta para diagnóstico e nova tentativa. Se a API aceitar a vaga mas a exclusão falhar, a Issue fica aberta com um aviso; não a edite antes de verificar a entrega no Discord, para evitar duplicatas. A exclusão é permanente e remove o histórico da Issue, então a deduplicação deve continuar sendo feita pela automação do ChatGPT.

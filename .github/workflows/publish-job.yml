@@ -125,46 +125,47 @@ jobs:
               --retry-all-errors
           )"
 
-          response="$(tr -d '\r\n' < "$response_file")"
-          printf 'status=%s\nresponse=%s\n' "$http_status" "$response" >> "$GITHUB_OUTPUT"
-
           if [ "$http_status" != "202" ]; then
             echo "API returned HTTP $http_status." >&2
             cat "$response_file" >&2
             exit 1
           fi
 
-      - name: Mark Issue as delivered
-        if: success()
+      - name: Delete delivered Issue
+        id: delete_issue
+        if: steps.api.outcome == 'success'
+        continue-on-error: true
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-          HTTP_STATUS: ${{ steps.api.outputs.status }}
-          API_RESPONSE: ${{ steps.api.outputs.response }}
+          GH_TOKEN: ${{ secrets.ISSUE_DELETE_TOKEN }}
+          ISSUE_NODE_ID: ${{ github.event.issue.node_id }}
         run: |
           set -euo pipefail
 
-          comment="$(
-            cat <<EOF
-          ✅ Vaga aceita pela API.
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "ISSUE_DELETE_TOKEN is not configured." >&2
+            exit 1
+          fi
 
-          HTTP: \`$HTTP_STATUS Accepted\`
+          if [ -z "${ISSUE_NODE_ID:-}" ]; then
+            echo "Issue Node ID is missing." >&2
+            exit 1
+          fi
 
-          A API confirmou que a mensagem entrou na fila de entrega.
+          gh api graphql \
+            -f query='
+              mutation($issueId: ID!) {
+                deleteIssue(input: { issueId: $issueId }) {
+                  repository {
+                    nameWithOwner
+                  }
+                }
+              }
+            ' \
+            -f issueId="$ISSUE_NODE_ID"
 
-          Resposta:
-
-          \`\`\`json
-          $API_RESPONSE
-          \`\`\`
-          EOF
-          )"
-
-          gh issue comment "$ISSUE_URL" --body "$comment"
-          gh issue close "$ISSUE_URL" --reason completed
-
-      - name: Report failure
-        if: failure()
+      - name: Report API failure
+        if: failure() && steps.api.outcome == 'failure'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -173,3 +174,14 @@ jobs:
 
           gh issue comment "$ISSUE_URL" --body \
             "❌ Não foi possível publicar esta vaga. Consulte a execução do GitHub Actions para ver o erro. A Issue permaneceu aberta. Depois de corrigir o problema, edite a Issue para disparar uma nova tentativa."
+
+      - name: Report deletion failure
+        if: steps.api.outcome == 'success' && steps.delete_issue.outcome == 'failure'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          gh issue comment "$ISSUE_URL" --body \
+            "⚠️ A vaga foi aceita pela API com HTTP 202, mas esta Issue não pôde ser apagada. NÃO edite esta Issue para tentar novamente, pois isso pode reenviar a vaga. Verifique o Secret ISSUE_DELETE_TOKEN e as permissões do PAT."
