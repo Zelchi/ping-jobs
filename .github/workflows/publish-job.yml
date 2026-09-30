@@ -1,0 +1,175 @@
+name: Publish job to jobs.zelchi.com
+
+on:
+  issues:
+    types:
+      - opened
+      - edited
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: publish-job-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: startsWith(github.event.issue.title, '[job]')
+    runs-on: ubuntu-latest
+
+    env:
+      JOB_PAYLOAD: ${{ github.event.issue.body }}
+      ISSUE_URL: ${{ github.event.issue.html_url }}
+      API_URL: https://jobs.zelchi.com/messages
+
+    steps:
+      - name: Validate and normalize payload
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          import json
+          import os
+          import sys
+          from urllib.parse import urlparse
+
+          raw = os.environ.get("JOB_PAYLOAD", "")
+
+          try:
+              payload = json.loads(raw)
+          except json.JSONDecodeError as exc:
+              print(f"Invalid JSON: {exc}", file=sys.stderr)
+              sys.exit(1)
+
+          if not isinstance(payload, dict):
+              print("Payload must be a JSON object.", file=sys.stderr)
+              sys.exit(1)
+
+          expected = {"title", "content", "link", "date"}
+          extra = set(payload) - expected
+          missing = expected - set(payload)
+
+          if extra:
+              print("Unexpected fields: " + ", ".join(sorted(extra)), file=sys.stderr)
+              sys.exit(1)
+
+          if missing:
+              print("Missing fields: " + ", ".join(sorted(missing)), file=sys.stderr)
+              sys.exit(1)
+
+          limits = {
+              "title": 256,
+              "content": 4096,
+              "link": 2048,
+              "date": 1024,
+          }
+
+          for field, maximum in limits.items():
+              value = payload[field]
+
+              if not isinstance(value, str):
+                  print(f"{field} must be a string.", file=sys.stderr)
+                  sys.exit(1)
+
+              if not value.strip():
+                  print(f"{field} cannot be empty.", file=sys.stderr)
+                  sys.exit(1)
+
+              if len(value) > maximum:
+                  print(f"{field} exceeds {maximum} characters.", file=sys.stderr)
+                  sys.exit(1)
+
+          parsed = urlparse(payload["link"])
+          if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+              print("link must be a valid HTTP/HTTPS URL.", file=sys.stderr)
+              sys.exit(1)
+
+          with open("payload.json", "w", encoding="utf-8") as file:
+              json.dump(payload, file, ensure_ascii=False, separators=(",", ":"))
+          PY
+
+      - name: Send job to API
+        id: api
+        shell: bash
+        env:
+          JOBS_API_TOKEN: ${{ secrets.JOBS_API_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${JOBS_API_TOKEN:-}" ]; then
+            echo "JOBS_API_TOKEN is not configured." >&2
+            exit 1
+          fi
+
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+
+          http_status="$(
+            curl \
+              --silent \
+              --show-error \
+              --output "$response_file" \
+              --write-out "%{http_code}" \
+              --request POST \
+              --url "$API_URL" \
+              --header "Authorization: Bearer $JOBS_API_TOKEN" \
+              --header "Content-Type: application/json" \
+              --data-binary @payload.json \
+              --connect-timeout 10 \
+              --max-time 30 \
+              --retry 3 \
+              --retry-delay 2 \
+              --retry-all-errors
+          )"
+
+          response="$(tr -d '\r\n' < "$response_file")"
+          printf 'status=%s\nresponse=%s\n' "$http_status" "$response" >> "$GITHUB_OUTPUT"
+
+          if [ "$http_status" != "202" ]; then
+            echo "API returned HTTP $http_status." >&2
+            cat "$response_file" >&2
+            exit 1
+          fi
+
+      - name: Mark Issue as delivered
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HTTP_STATUS: ${{ steps.api.outputs.status }}
+          API_RESPONSE: ${{ steps.api.outputs.response }}
+        run: |
+          set -euo pipefail
+
+          comment="$(
+            cat <<EOF
+          ✅ Vaga aceita pela API.
+
+          HTTP: \`$HTTP_STATUS Accepted\`
+
+          A API confirmou que a mensagem entrou na fila de entrega.
+
+          Resposta:
+
+          \`\`\`json
+          $API_RESPONSE
+          \`\`\`
+          EOF
+          )"
+
+          gh issue comment "$ISSUE_URL" --body "$comment"
+          gh issue close "$ISSUE_URL" --reason completed
+
+      - name: Report failure
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          gh issue comment "$ISSUE_URL" --body \
+            "❌ Não foi possível publicar esta vaga. Consulte a execução do GitHub Actions para ver o erro. A Issue permaneceu aberta. Depois de corrigir o problema, edite a Issue para disparar uma nova tentativa."

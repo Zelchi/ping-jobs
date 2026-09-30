@@ -1,10 +1,10 @@
 # Ping Jobs
 
-Bot HTTP em Go que recebe vagas de emprego e publica cada vaga nos canais do Discord configurados. Ele não recebe comandos nem conversa no Discord: usa a API REST somente para publicar embeds.
+Bot HTTP em Go que recebe vagas de emprego e publica cada vaga nos canais do Discord configurados. Ele mantém uma conexão Gateway para aparecer online, sem habilitar intents de leitura de mensagens; usa a API REST para publicar embeds.
 
 ## Requisitos
 
-- Go 1.22 ou superior
+- Go 1.26 ou superior
 - Uma aplicação e um bot criados no [Discord Developer Portal](https://discord.com/developers/applications)
 - Permissões `Send Messages` e `Embed Links` para o bot em cada canal configurado
 
@@ -52,7 +52,7 @@ cp -n .env.example .env
 docker compose -f compose.yml up --build -d
 ```
 
-Por padrão, a API fica disponível na porta `8080`. Para usar outra porta no host, altere `HTTP_PORT` no `.env`. O serviço reinicia automaticamente após falhas ou reinicializações do Docker.
+Por padrão, a API fica disponível na porta `8080`. Para usar outra porta no host, altere `HTTP_PORT` no `.env`. Após atualizar o projeto, reconstrua e reinicie o serviço com `docker compose -f compose.yml up -d --build`. O serviço reinicia automaticamente após falhas ou reinicializações do Docker.
 
 ## API
 
@@ -102,3 +102,9 @@ curl -X POST http://localhost:8080/messages \
 ### `GET /healthz`
 
 Retorna `204 No Content` para indicar que o processo HTTP está ativo.
+
+## Integração com GitHub Actions
+
+O workflow em `.github/workflows/publish-job.yml` publica Issues cujo título começa com `[job]`. O corpo deve conter somente o JSON da API. Antes de usar a integração, configure `JOBS_API_TOKEN` em **Settings → Secrets and variables → Actions** no GitHub.
+
+O passo a passo, exemplos e checklist estão em [GITHUB_ACTIONS_JOB_DISPATCH.md](GITHUB_ACTIONS_JOB_DISPATCH.md).

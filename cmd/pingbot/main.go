@@ -50,6 +50,16 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("destinos carregados", "count", len(destinations))
 
+	gateway, err := discord.ConnectGateway(discordToken, logger)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := gateway.Close(); err != nil {
+			logger.Warn("erro ao fechar conexão Gateway", "error", err)
+		}
+	}()
+
 	messageQueue := queue.New(queueCapacity, messageTTL)
 	sender := discord.NewClient(discordToken)
 
