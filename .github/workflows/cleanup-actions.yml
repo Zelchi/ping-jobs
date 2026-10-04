@@ -1,0 +1,67 @@
+name: Cleanup workflow runs
+
+on:
+  workflow_run:
+    workflows:
+      - "Publish job to jobs.zelchi.com"
+    types:
+      - completed
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Delete completed publish runs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          gh api --paginate \
+            "repos/$REPOSITORY/actions/workflows/publish-job.yml/runs?status=completed&per_page=100" \
+            --jq '.workflow_runs[]
+              | select(
+                  .conclusion == "success"
+                  or .conclusion == "skipped"
+                  or .conclusion == "cancelled"
+                )
+              | .id' |
+          while read -r run_id; do
+            [ -n "$run_id" ] || continue
+            echo "Deleting publish run $run_id"
+            gh api \
+              --method DELETE \
+              "repos/$REPOSITORY/actions/runs/$run_id"
+          done
+
+      - name: Delete previous cleanup runs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          gh api --paginate \
+            "repos/$REPOSITORY/actions/workflows/cleanup-actions.yml/runs?status=completed&per_page=100" \
+            --jq '.workflow_runs[].id' |
+          while read -r run_id; do
+            [ -n "$run_id" ] || continue
+            if [ "$run_id" = "$CURRENT_RUN_ID" ]; then
+              continue
+            fi
+
+            echo "Deleting previous cleanup run $run_id"
+            gh api \
+              --method DELETE \
+              "repos/$REPOSITORY/actions/runs/$run_id"
+          done
