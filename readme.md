@@ -24,12 +24,15 @@ Este guia mostra como configurar o projeto do zero, executá-lo com Docker Compo
 ```mermaid
 flowchart TD
     A[Automação cria Issue com prefixo job] --> B[GitHub Actions valida o JSON]
-    B --> C[POST para a API do Ping Jobs]
-    C --> D{HTTP 202?}
-    D -- Não --> E[Issue fica aberta com aviso]
-    D -- Sim --> F[Vaga entra na fila em memória]
-    F --> G[Bot publica nos canais do Discord]
-    F --> H[Action tenta apagar a Issue]
+    B --> C{Já existe em sent-jobs.json?}
+    C -- Sim --> D[Issue duplicada é descartada]
+    C -- Não --> E[POST para a API do Ping Jobs]
+    E --> F{HTTP 202?}
+    F -- Não --> G[Issue fica aberta com aviso]
+    F -- Sim --> H[Registra a vaga em sent-jobs.json]
+    H --> I[Vaga entra na fila em memória]
+    I --> J[Bot publica nos canais do Discord]
+    H --> K[Action tenta apagar a Issue]
 ```
 
 O endpoint recebe um objeto JSON com `title`, `content`, `link` e `date`. No Discord, o título fica clicável, o conteúdo aparece na descrição do embed e a data aparece em um campo próprio.
@@ -262,8 +265,10 @@ O corpo deve ser somente um objeto JSON válido:
 Em **Actions → Publish job to jobs.zelchi.com**, acompanhe estas etapas:
 
 1. O workflow valida campos, tipos, URL e limites.
-2. Envia o JSON para a API e exige HTTP `202`.
-3. Depois do `202`, tenta apagar permanentemente a Issue.
+2. Consulta `sent-jobs.json` e descarta automaticamente vagas já enviadas.
+3. Envia apenas vagas novas para a API e exige HTTP `202`.
+4. Depois do `202`, registra a vaga em `sent-jobs.json`.
+5. Só então tenta apagar permanentemente a Issue.
 
 Se a API falhar, a Issue fica aberta com um comentário de erro e pode ser editada depois de corrigir o problema. Se a API aceitar a vaga, mas o PAT não conseguir apagar a Issue, ela fica aberta com um aviso. Nesse segundo caso, **não edite nem reenvie a Issue antes de confirmar a entrega no Discord**, porque a vaga pode já ter sido publicada.
 
@@ -278,7 +283,7 @@ Para cada vaga nova, crie uma Issue:
 - link oficial e data em texto, por exemplo `2026-09-30`;
 - nenhum token, cabeçalho de autorização ou bloco Markdown.
 
-A exclusão remove o histórico da Issue do repositório. Por isso, continue deduplicando vagas na automação, por exemplo usando empresa, cargo e URL.
+A exclusão remove o histórico da Issue, mas `sent-jobs.json` preserva o registro das vagas efetivamente enviadas. A automação deve consultar esse arquivo antes de reportar ou criar uma nova Issue.
 
 ## 8. Usar uma automação do ChatGPT
 
@@ -307,6 +312,21 @@ Exemplo do corpo:
 ```
 
 O ChatGPT não precisa receber `API_TOKEN`, `JOBS_API_TOKEN` nem `ISSUE_DELETE_TOKEN`; os dois últimos ficam nos GitHub Actions Secrets.
+
+## Controle de duplicidade
+
+O arquivo `sent-jobs.json` funciona como histórico persistente das vagas já aceitas pela API. Antes de publicar uma nova Issue `[job]`, o workflow compara a vaga com esse histórico.
+
+A deduplicação usa duas regras:
+
+- URL canônica igual: a vaga é considerada duplicada mesmo quando a URL contém parâmetros de rastreamento diferentes.
+- Mesmo título (cargo + empresa) enviado nos últimos 60 dias: a vaga também é considerada duplicada, protegendo contra links alternativos para a mesma oportunidade.
+
+As execuções de publicação são serializadas com um único grupo de `concurrency`, evitando que duas Issues iguais passem pela verificação ao mesmo tempo.
+
+Depois que a API responde com HTTP `202`, o workflow registra a vaga em `sent-jobs.json` antes de apagar a Issue. Se a gravação do histórico falhar, a Issue permanece aberta e recebe um aviso para evitar reenvio acidental.
+
+Ao pesquisar novas vagas, use `sent-jobs.json` como fonte de verdade para saber o que já foi efetivamente enviado ao pipeline.
 
 ## Limites e comportamento da fila
 
