@@ -1,4 +1,4 @@
-name: Publish job to jobs.zelchi.com
+name: Publish work to Discord
 
 on:
   issues:
@@ -10,16 +10,16 @@ permissions:
   issues: write
 
 concurrency:
-  group: publish-job-${{ github.event.issue.number }}
+  group: publish-work-${{ github.event.issue.number }}
   cancel-in-progress: false
 
 jobs:
   publish:
-    if: startsWith(github.event.issue.title, '[job]') && github.event.issue.user.login == github.repository_owner
+    if: startsWith(github.event.issue.title, '[work]') && github.event.issue.user.login == github.repository_owner
     runs-on: ubuntu-latest
 
     env:
-      JOB_PAYLOAD: ${{ github.event.issue.body }}
+      WORK_PAYLOAD: ${{ github.event.issue.body }}
       ISSUE_URL: ${{ github.event.issue.html_url }}
       API_URL: https://jobs.zelchi.com/messages
 
@@ -35,7 +35,7 @@ jobs:
           import sys
           from urllib.parse import urlparse
 
-          raw = os.environ.get("JOB_PAYLOAD", "")
+          raw = os.environ.get("WORK_PAYLOAD", "")
 
           try:
               payload = json.loads(raw)
@@ -90,16 +90,16 @@ jobs:
               json.dump(payload, file, ensure_ascii=False, separators=(",", ":"))
           PY
 
-      - name: Send job to API
+      - name: Send work to API
         id: api
         shell: bash
         env:
-          JOBS_API_TOKEN: ${{ secrets.JOBS_API_TOKEN }}
+          WORKS_API_TOKEN: ${{ secrets.WORKS_API_TOKEN }}
         run: |
           set -euo pipefail
 
-          if [ -z "${JOBS_API_TOKEN:-}" ]; then
-            echo "JOBS_API_TOKEN is not configured." >&2
+          if [ -z "${WORKS_API_TOKEN:-}" ]; then
+            echo "WORKS_API_TOKEN is not configured." >&2
             exit 1
           fi
 
@@ -114,7 +114,7 @@ jobs:
               --write-out "%{http_code}" \
               --request POST \
               --url "$API_URL" \
-              --header "Authorization: Bearer $JOBS_API_TOKEN" \
+              --header "Authorization: Bearer $WORKS_API_TOKEN" \
               --header "Content-Type: application/json" \
               --data-binary @payload.json \
               --connect-timeout 10 \
@@ -127,11 +127,11 @@ jobs:
           case "$http_status" in
             202)
               result="accepted"
-              echo "API accepted the job into its queue."
+              echo "API accepted the work into its queue."
               ;;
             409)
               result="duplicate"
-              echo "API rejected the job as a duplicate from the last 30 days."
+              echo "API rejected the work as a duplicate from the last 30 days."
               ;;
             *)
               echo "API returned HTTP $http_status." >&2

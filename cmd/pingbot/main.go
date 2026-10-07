@@ -90,7 +90,7 @@ func run(logger *slog.Logger) error {
 	workers.Add(1)
 	go func() {
 		defer workers.Done()
-		pruneExpiredJobs(workerCtx, dedupeStore, logger)
+		pruneExpiredWorks(workerCtx, dedupeStore, logger)
 	}()
 
 	address := envOrDefault("HTTP_ADDR", ":8080")
@@ -151,7 +151,7 @@ func work(ctx context.Context, workerID int, messageQueue *queue.Queue, sender *
 				break
 			}
 			sendCtx, cancel := context.WithDeadline(ctx, message.ExpiresAt)
-			err = sender.SendJob(sendCtx, channelID, message.Title, message.Content, message.Link, message.Date)
+			err = sender.SendWork(sendCtx, channelID, message.Title, message.Content, message.Link, message.Date)
 			cancel()
 			if err == nil {
 				messageQueue.MarkDelivered(message.ID, channelID)
@@ -200,7 +200,7 @@ func expireMessages(ctx context.Context, messageQueue *queue.Queue) {
 	}
 }
 
-func pruneExpiredJobs(ctx context.Context, dedupeStore *dedupe.Store, logger *slog.Logger) {
+func pruneExpiredWorks(ctx context.Context, dedupeStore *dedupe.Store, logger *slog.Logger) {
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
 	for {

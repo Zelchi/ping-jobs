@@ -3,7 +3,7 @@ name: Cleanup workflow runs
 on:
   workflow_run:
     workflows:
-      - "Publish job to jobs.zelchi.com"
+      - "Publish work to Discord"
     types:
       - completed
   workflow_dispatch:
@@ -26,7 +26,7 @@ jobs:
           set -euo pipefail
 
           gh api --paginate \
-            "repos/$REPOSITORY/actions/workflows/publish-job.yml/runs?status=completed&per_page=100" \
+            "repos/$REPOSITORY/actions/workflows/publish-work.yml/runs?status=completed&per_page=100" \
             --jq '.workflow_runs[]
               | select(
                   .conclusion == "success"

@@ -23,7 +23,7 @@ Este guia mostra como configurar o projeto do zero, executá-lo com Docker Compo
 
 ```mermaid
 flowchart TD
-    A[Automação cria Issue com prefixo job] --> B[GitHub Actions valida o JSON]
+    A[Automação cria Issue com prefixo work] --> B[GitHub Actions valida o JSON]
     B --> C[POST para a API do Ping Work]
     C --> D{Vaga já consta no SQLite?}
     D -- Sim --> E[API responde HTTP 409]
@@ -180,7 +180,7 @@ O GitHub Actions precisa alcançar a API pela internet. A configuração deste r
 2. Configure Caddy, Nginx ou outro proxy reverso com TLS/HTTPS.
 3. Encaminhe as requisições para `http://127.0.0.1:8080` na VPS.
 4. Restrinja no firewall o acesso externo direto à porta da API; deixe o acesso público pelo proxy HTTPS.
-5. No arquivo `.github/workflows/publish-job.yml`, altere `API_URL` para `https://SEU_DOMINIO/messages`.
+5. No arquivo `.github/workflows/publish-work.yml`, altere `API_URL` para `https://SEU_DOMINIO/messages`.
 
 ## 6. Testar a API
 
@@ -232,7 +232,7 @@ O `GET /messages/check` exige `title` e `link`, com os mesmos limites e validaç
 
 ## 7. Configurar GitHub Actions
 
-O workflow incluído em `.github/workflows/publish-job.yml` recebe eventos de Issue `opened` e `edited`. Ele só processa Issues cujo título começa com `[job]`.
+O workflow incluído em `.github/workflows/publish-work.yml` recebe eventos de Issue `opened` e `edited`. Ele só processa Issues cujo título começa com `[work]`.
 
 ### 7.1 Habilitar Issues e Actions
 
@@ -242,7 +242,7 @@ No repositório do GitHub, confira em **Settings → General → Features** se *
 
 Abra **Settings → Secrets and variables → Actions → New repository secret** e crie estes dois valores:
 
-#### `JOBS_API_TOKEN`
+#### `WORKS_API_TOKEN`
 
 Use o mesmo valor configurado em `API_TOKEN` na VPS. O workflow envia esse token no cabeçalho Bearer para autenticar o POST.
 
@@ -261,10 +261,10 @@ Não adicione permissões extras. Não coloque PATs no `.env`, no YAML, no corpo
 
 ### 7.3 Criar uma Issue de teste
 
-Crie uma Issue com título começando por `[job]`, por exemplo:
+Crie uma Issue com título começando por `[work]`, por exemplo:
 
 ```text
-[job] Teste da integração
+[work] Teste da integração
 ```
 
 O corpo deve ser somente um objeto JSON válido:
@@ -278,7 +278,7 @@ O corpo deve ser somente um objeto JSON válido:
 }
 ```
 
-Em **Actions → Publish job to jobs.zelchi.com**, acompanhe estas etapas:
+Em **Actions → Publish work to Discord**, acompanhe estas etapas:
 
 1. O workflow valida campos, tipos, URL e limites.
 2. Envia a vaga para a API, que consulta o banco SQLite persistente.
@@ -293,7 +293,7 @@ Se a API falhar, a Issue fica aberta com um comentário de erro e pode ser edita
 
 Para cada vaga nova, crie uma Issue:
 
-- título começando exatamente com `[job] `;
+- título começando exatamente com `[work] `;
 - corpo contendo somente o JSON com `title`, `content`, `link` e `date`;
 - link oficial e data em texto, por exemplo `2026-09-30`;
 - nenhum token, cabeçalho de autorização ou bloco Markdown.
@@ -308,7 +308,7 @@ Se uma automação do ChatGPT com acesso ao GitHub for criar as Issues, inclua i
 Quando encontrar uma vaga nova válida:
 1. Verifique se ela já foi reportada, usando empresa + cargo + URL.
 2. Crie uma Issue no repositório configurado.
-3. O título deve começar com "[job] ", seguido por cargo e empresa.
+3. O título deve começar com "[work] ", seguido por cargo e empresa.
 4. O corpo deve ser somente JSON válido, sem bloco Markdown.
 5. Use exatamente os campos title, content, link e date; todos como strings.
 6. Use o link oficial da vaga.
@@ -326,7 +326,7 @@ Exemplo do corpo:
 }
 ```
 
-O ChatGPT não precisa receber `API_TOKEN`, `JOBS_API_TOKEN` nem `ISSUE_DELETE_TOKEN`; os dois últimos ficam nos GitHub Actions Secrets.
+O ChatGPT não precisa receber `API_TOKEN`, `WORKS_API_TOKEN` nem `ISSUE_DELETE_TOKEN`; os dois últimos ficam nos GitHub Actions Secrets.
 
 ## Controle de duplicidade
 
@@ -337,7 +337,7 @@ A deduplicação usa duas regras:
 - URL canônica igual: a vaga é considerada duplicada mesmo quando a URL contém parâmetros de rastreamento conhecidos diferentes.
 - Mesmo título normalizado: a vaga também é considerada duplicada, protegendo contra links alternativos para a mesma oportunidade.
 
-Cada registro expira após 30 dias. A API apaga registros expirados ao iniciar, durante novas requisições e em uma limpeza periódica. O banco começa vazio: vagas registradas pelo mecanismo anterior não são importadas.
+Cada registro expira após 30 dias. A API apaga registros expirados ao iniciar, durante novas requisições e em uma limpeza periódica. O armazenamento atual não migra registros de formatos anteriores; ao atualizar, o histórico novo começa a ser preenchido após a implantação.
 
 Quando a API responde `409 Conflict`, o workflow entende que a vaga já foi aceita anteriormente e tenta apagar a Issue repetida. Para operar mais de uma réplica do bot, todas devem compartilhar o mesmo banco SQLite em armazenamento compatível; o Compose deste projeto inicia uma única réplica.
 
@@ -361,7 +361,7 @@ Quando a API responde `409 Conflict`, o workflow entende que a vaga já foi acei
 | API retorna `409` | A vaga tem URL canônica ou título normalizado igual ao de uma vaga aceita nos últimos 30 dias. |
 | API retorna `503` | A fila está cheia; veja os logs e aguarde processamento ou expiração. |
 | Vaga não aparece no Discord | Confira se o bot está no servidor correto, se os IDs são do servidor/canal e se ele tem `Send Messages` e `Embed Links`. |
-| Action falha antes do POST | Confira o JSON da Issue, o prefixo `[job]` e o Secret `JOBS_API_TOKEN`. |
+| Action falha antes do POST | Confira o JSON da Issue, o prefixo `[work]` e o Secret `WORKS_API_TOKEN`. |
 | Action recebeu `202` ou `409`, mas a Issue ficou aberta | Confira `ISSUE_DELETE_TOKEN`, acesso ao repositório e permissão **Issues: Read and write**. Para `202`, confirme a publicação antes de reenviar; para `409`, a API já identificou uma vaga repetida. |
 
 ## Segurança

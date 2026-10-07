@@ -91,7 +91,7 @@ func (s *Store) Accept(ctx context.Context, title, link string, enqueue func() e
 
 	now := time.Now()
 	nowUnix := now.UnixNano()
-	if _, err := tx.ExecContext(opCtx, `DELETE FROM sent_jobs WHERE expires_at <= ?`, nowUnix); err != nil {
+	if _, err := tx.ExecContext(opCtx, `DELETE FROM sent_works WHERE expires_at <= ?`, nowUnix); err != nil {
 		return false, fmt.Errorf("limpar deduplicação expirada: %w", err)
 	}
 
@@ -110,7 +110,7 @@ func (s *Store) Accept(ctx context.Context, title, link string, enqueue func() e
 		return false, err
 	}
 	if _, err := tx.ExecContext(opCtx, `
-		INSERT INTO sent_jobs (title, link, title_key, canonical_url, created_at, expires_at)
+		INSERT INTO sent_works (title, link, title_key, canonical_url, created_at, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?)`, title, link, titleKey, canonicalURL, nowUnix, now.Add(retention).UnixNano()); err != nil {
 		return false, fmt.Errorf("registrar vaga no SQLite: %w", err)
 	}
@@ -142,7 +142,7 @@ func findMatch(ctx context.Context, queryer rowQuerier, nowUnix int64, titleKey,
 		var found int
 		err := queryer.QueryRowContext(ctx, `
 			SELECT 1
-			FROM sent_jobs
+			FROM sent_works
 			WHERE expires_at > ? AND canonical_url = ?
 			LIMIT 1`, nowUnix, canonicalURL).Scan(&found)
 		if err == nil {
@@ -157,7 +157,7 @@ func findMatch(ctx context.Context, queryer rowQuerier, nowUnix int64, titleKey,
 		var found int
 		err := queryer.QueryRowContext(ctx, `
 			SELECT 1
-			FROM sent_jobs
+			FROM sent_works
 			WHERE expires_at > ? AND title_key = ?
 			LIMIT 1`, nowUnix, titleKey).Scan(&found)
 		if err == nil {
@@ -174,7 +174,7 @@ func (s *Store) PruneExpired(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.ExecContext(ctx, `DELETE FROM sent_jobs WHERE expires_at <= ?`, time.Now().UnixNano())
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sent_works WHERE expires_at <= ?`, time.Now().UnixNano())
 	if err != nil {
 		return fmt.Errorf("limpar vagas expiradas do SQLite: %w", err)
 	}
@@ -189,7 +189,7 @@ func (s *Store) initialize(ctx context.Context) error {
 		return fmt.Errorf("configurar journal do SQLite: %w", err)
 	}
 	statements := []string{
-		`CREATE TABLE IF NOT EXISTS sent_jobs (
+		`CREATE TABLE IF NOT EXISTS sent_works (
 			id INTEGER PRIMARY KEY,
 			title TEXT NOT NULL,
 			link TEXT NOT NULL,
@@ -198,8 +198,8 @@ func (s *Store) initialize(ctx context.Context) error {
 			created_at INTEGER NOT NULL,
 			expires_at INTEGER NOT NULL
 		)`,
-		`CREATE INDEX IF NOT EXISTS sent_jobs_url_expiry_idx ON sent_jobs (canonical_url, expires_at)`,
-		`CREATE INDEX IF NOT EXISTS sent_jobs_title_expiry_idx ON sent_jobs (title_key, expires_at)`,
+		`CREATE INDEX IF NOT EXISTS sent_works_url_expiry_idx ON sent_works (canonical_url, expires_at)`,
+		`CREATE INDEX IF NOT EXISTS sent_works_title_expiry_idx ON sent_works (title_key, expires_at)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {

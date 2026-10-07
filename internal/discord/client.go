@@ -51,7 +51,7 @@ func NewClient(token string) *Client {
 	}
 }
 
-func (c *Client) SendJob(ctx context.Context, channelID, title, content, link, date string) error {
+func (c *Client) SendWork(ctx context.Context, channelID, title, content, link, date string) error {
 	body, err := json.Marshal(struct {
 		Embeds []embed `json:"embeds"`
 	}{Embeds: []embed{{
