@@ -46,6 +46,11 @@ type sendResponse struct {
 	Destinations int    `json:"destinations"`
 }
 
+type checkResponse struct {
+	Duplicate bool   `json:"duplicate"`
+	MatchedBy string `json:"matched_by,omitempty"`
+}
+
 func NewServer(apiToken string, destinations config.Destinations, messageQueue *queue.Queue, dedupeStore *dedupe.Store, logger *slog.Logger) *Server {
 	return &Server{
 		apiToken:     apiToken,
@@ -59,12 +64,52 @@ func NewServer(apiToken string, destinations config.Destinations, messageQueue *
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("GET /messages/check", s.check)
 	mux.HandleFunc("POST /messages", s.send)
 	return mux
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) check(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if !s.authorized(r) {
+		writeError(w, http.StatusUnauthorized, "token inválido")
+		return
+	}
+
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil || len(query) != 2 || len(query["title"]) != 1 || len(query["link"]) != 1 {
+		writeError(w, http.StatusBadRequest, "informe somente os parâmetros title e link")
+		return
+	}
+	title := strings.TrimSpace(query.Get("title"))
+	link := strings.TrimSpace(query.Get("link"))
+	if title == "" || link == "" {
+		writeError(w, http.StatusBadRequest, "title e link são obrigatórios")
+		return
+	}
+	if !withinLimit(title, maxTitleLength) {
+		writeError(w, http.StatusBadRequest, "title deve ter até 256 caracteres UTF-8")
+		return
+	}
+	if !withinLimit(link, maxLinkLength) || !validLink(link) {
+		writeError(w, http.StatusBadRequest, "link deve ser uma URL HTTP ou HTTPS válida")
+		return
+	}
+
+	duplicate, matchedBy, err := s.dedupe.Check(r.Context(), title, link)
+	if err != nil {
+		s.logger.Error("não foi possível consultar duplicidade no SQLite", "error", err)
+		writeError(w, http.StatusInternalServerError, "não foi possível consultar a vaga")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(checkResponse{Duplicate: duplicate, MatchedBy: matchedBy})
 }
 
 func (s *Server) send(w http.ResponseWriter, r *http.Request) {

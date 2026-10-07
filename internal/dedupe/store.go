@@ -32,6 +32,10 @@ type Store struct {
 	mu sync.Mutex
 }
 
+type rowQuerier interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 func Open(path string) (*Store, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -91,21 +95,15 @@ func (s *Store) Accept(ctx context.Context, title, link string, enqueue func() e
 		return false, fmt.Errorf("limpar deduplicação expirada: %w", err)
 	}
 
-	var found int
-	err = tx.QueryRowContext(opCtx, `
-		SELECT 1
-		FROM sent_jobs
-		WHERE expires_at > ?
-		  AND ((? <> '' AND canonical_url = ?) OR (? <> '' AND title_key = ?))
-		LIMIT 1`, nowUnix, canonicalURL, canonicalURL, titleKey, titleKey).Scan(&found)
-	if err == nil {
+	matchedBy, err := findMatch(opCtx, tx, nowUnix, titleKey, canonicalURL)
+	if err != nil {
+		return false, fmt.Errorf("consultar duplicidade no SQLite: %w", err)
+	}
+	if matchedBy != "" {
 		if err := tx.Commit(); err != nil {
 			return false, fmt.Errorf("confirmar limpeza do SQLite: %w", err)
 		}
 		return true, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return false, fmt.Errorf("consultar duplicidade no SQLite: %w", err)
 	}
 
 	if err := enqueue(); err != nil {
@@ -120,6 +118,56 @@ func (s *Store) Accept(ctx context.Context, title, link string, enqueue func() e
 		return false, fmt.Errorf("confirmar registro no SQLite: %w", err)
 	}
 	return false, nil
+}
+
+func (s *Store) Check(ctx context.Context, title, link string) (bool, string, error) {
+	titleKey := normalizeTitle(title)
+	canonicalURL, err := canonicalizeURL(link)
+	if err != nil {
+		return false, "", fmt.Errorf("normalizar URL da vaga: %w", err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	matchedBy, err := findMatch(ctx, s.db, time.Now().UnixNano(), titleKey, canonicalURL)
+	if err != nil {
+		return false, "", fmt.Errorf("consultar duplicidade no SQLite: %w", err)
+	}
+	return matchedBy != "", matchedBy, nil
+}
+
+func findMatch(ctx context.Context, queryer rowQuerier, nowUnix int64, titleKey, canonicalURL string) (string, error) {
+	if canonicalURL != "" {
+		var found int
+		err := queryer.QueryRowContext(ctx, `
+			SELECT 1
+			FROM sent_jobs
+			WHERE expires_at > ? AND canonical_url = ?
+			LIMIT 1`, nowUnix, canonicalURL).Scan(&found)
+		if err == nil {
+			return "url", nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return "", err
+		}
+	}
+
+	if titleKey != "" {
+		var found int
+		err := queryer.QueryRowContext(ctx, `
+			SELECT 1
+			FROM sent_jobs
+			WHERE expires_at > ? AND title_key = ?
+			LIMIT 1`, nowUnix, titleKey).Scan(&found)
+		if err == nil {
+			return "title", nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return "", err
+		}
+	}
+	return "", nil
 }
 
 func (s *Store) PruneExpired(ctx context.Context) error {

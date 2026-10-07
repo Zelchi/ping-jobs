@@ -208,15 +208,27 @@ curl -i -X POST http://localhost:8080/messages \
 
 Uma resposta `202 Accepted` significa que a vaga entrou na fila do bot. Ela ainda pode levar alguns instantes para aparecer no Discord.
 
+Antes de oferecer ou enviar uma vaga, o agendador pode consultar a deduplicação:
+
+```sh
+curl -G -i http://localhost:8080/messages/check \
+  -H "Authorization: Bearer $API_TOKEN" \
+  --data-urlencode "title=Desenvolvedor Go" \
+  --data-urlencode "link=https://exemplo.com/vagas/desenvolvedor-go"
+```
+
+Se não houver correspondência, a resposta é `200 OK` com `{"duplicate":false}`. Se houver, a resposta inclui o motivo, por exemplo `{"duplicate":true,"matched_by":"url"}` ou `{"duplicate":true,"matched_by":"title"}`.
+
 ### Endpoints
 
 | Método e caminho | Resultado |
 | --- | --- |
 | `GET /healthz` | `204 No Content` se o processo HTTP estiver ativo. |
+| `GET /messages/check?title=...&link=...` | `200 OK` com `duplicate` e, se duplicada, `matched_by`. Exige `Authorization: Bearer <API_TOKEN>`. |
 | `POST /messages` | `202 Accepted` quando a vaga válida entra na fila. Exige `Authorization: Bearer <API_TOKEN>`. |
 | `POST /messages` | `409 Conflict` quando a URL ou o título normalizado já foi aceito nos últimos 30 dias. |
 
-O título aceita até 256 caracteres, `content` até 4096, `link` até 2048 e `date` até 1024. O link precisa ser HTTP ou HTTPS.
+O `GET /messages/check` exige `title` e `link`, com os mesmos limites e validação de URL do endpoint de publicação. A consulta não reserva a vaga: o `POST /messages` sempre faz uma verificação definitiva e pode responder `409` se outra requisição tiver aceitado a mesma vaga nesse intervalo. O título aceita até 256 caracteres, `content` até 4096, `link` até 2048 e `date` até 1024. O link precisa ser HTTP ou HTTPS.
 
 ## 7. Configurar GitHub Actions
 
