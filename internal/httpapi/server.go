@@ -13,8 +13,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"ping-jobs/internal/config"
-	"ping-jobs/internal/queue"
+	"ping-work/internal/config"
+	"ping-work/internal/dedupe"
+	"ping-work/internal/queue"
 )
 
 const (
@@ -28,6 +29,7 @@ type Server struct {
 	apiToken     string
 	destinations config.Destinations
 	queue        *queue.Queue
+	dedupe       *dedupe.Store
 	logger       *slog.Logger
 }
 
@@ -44,11 +46,12 @@ type sendResponse struct {
 	Destinations int    `json:"destinations"`
 }
 
-func NewServer(apiToken string, destinations config.Destinations, messageQueue *queue.Queue, logger *slog.Logger) *Server {
+func NewServer(apiToken string, destinations config.Destinations, messageQueue *queue.Queue, dedupeStore *dedupe.Store, logger *slog.Logger) *Server {
 	return &Server{
 		apiToken:     apiToken,
 		destinations: destinations,
 		queue:        messageQueue,
+		dedupe:       dedupeStore,
 		logger:       logger,
 	}
 }
@@ -112,13 +115,22 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		channelIDs = append(channelIDs, channelID)
 	}
 	sort.Strings(channelIDs)
-	message, err := s.queue.Enqueue(request.Title, request.Content, request.Link, request.Date, channelIDs)
+	var message queue.Message
+	duplicate, err := s.dedupe.Accept(r.Context(), request.Title, request.Link, func() error {
+		var enqueueErr error
+		message, enqueueErr = s.queue.Enqueue(request.Title, request.Content, request.Link, request.Date, channelIDs)
+		return enqueueErr
+	})
+	if duplicate {
+		writeError(w, http.StatusConflict, "vaga já recebida nos últimos 30 dias")
+		return
+	}
 	if err != nil {
 		if errors.Is(err, queue.ErrFull) {
 			writeError(w, http.StatusServiceUnavailable, "fila temporariamente cheia")
 			return
 		}
-		s.logger.Error("não foi possível adicionar mensagem à fila", "error", err)
+		s.logger.Error("não foi possível aceitar ou registrar a vaga", "error", err)
 		writeError(w, http.StatusInternalServerError, "não foi possível aceitar a mensagem")
 		return
 	}

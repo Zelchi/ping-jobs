@@ -7,11 +7,10 @@ on:
       - edited
 
 permissions:
-  contents: write
   issues: write
 
 concurrency:
-  group: publish-jobs
+  group: publish-job-${{ github.event.issue.number }}
   cancel-in-progress: false
 
 jobs:
@@ -25,12 +24,7 @@ jobs:
       API_URL: https://jobs.zelchi.com/messages
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Validate and normalize payload
+      - name: Validate payload
         shell: bash
         run: |
           set -euo pipefail
@@ -96,141 +90,8 @@ jobs:
               json.dump(payload, file, ensure_ascii=False, separators=(",", ":"))
           PY
 
-      - name: Check sent jobs ledger
-        id: dedupe
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python3 <<'PY'
-          import datetime as dt
-          import json
-          import os
-          import re
-          import unicodedata
-          from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-
-          TRACKING_KEYS = {
-              "action",
-              "fbclid",
-              "gclid",
-              "gh_src",
-              "jobboardsource",
-              "lever-source",
-              "ref",
-              "referral",
-              "source",
-              "sourcetoken",
-              "utm_campaign",
-              "utm_content",
-              "utm_medium",
-              "utm_source",
-              "utm_term",
-          }
-          TITLE_WINDOW_DAYS = 60
-
-          def normalize_title(value):
-              value = unicodedata.normalize("NFKC", value).casefold()
-              value = re.sub(r"[^\w]+", " ", value, flags=re.UNICODE)
-              return " ".join(value.split())
-
-          def canonicalize_url(value):
-              parsed = urlsplit(value.strip())
-              query = [
-                  (key, item)
-                  for key, item in parse_qsl(parsed.query, keep_blank_values=True)
-                  if key.casefold() not in TRACKING_KEYS
-              ]
-              path = parsed.path.rstrip("/") or "/"
-              return urlunsplit((
-                  parsed.scheme.casefold(),
-                  parsed.netloc.casefold(),
-                  path,
-                  urlencode(sorted(query)),
-                  "",
-              ))
-
-          with open("payload.json", encoding="utf-8") as file:
-              payload = json.load(file)
-
-          try:
-              with open("sent-jobs.json", encoding="utf-8") as file:
-                  ledger = json.load(file)
-          except FileNotFoundError:
-              ledger = {"version": 1, "jobs": []}
-
-          candidate_url = canonicalize_url(payload["link"])
-          candidate_title = normalize_title(payload["title"])
-
-          try:
-              reference_date = dt.date.fromisoformat(payload["date"][:10])
-          except ValueError:
-              reference_date = dt.datetime.now(dt.timezone.utc).date()
-
-          duplicate = False
-          reason = ""
-
-          for job in ledger.get("jobs", []):
-              stored_link = str(job.get("link", "")).strip()
-              if stored_link and canonicalize_url(stored_link) == candidate_url:
-                  duplicate = True
-                  reason = "canonical URL already sent"
-                  break
-
-              stored_title = str(job.get("title", "")).strip()
-              if not stored_title or normalize_title(stored_title) != candidate_title:
-                  continue
-
-              try:
-                  sent_at = dt.date.fromisoformat(str(job.get("sent_at", ""))[:10])
-              except ValueError:
-                  sent_at = reference_date
-
-              if abs((reference_date - sent_at).days) <= TITLE_WINDOW_DAYS:
-                  duplicate = True
-                  reason = f"same title/company sent within {TITLE_WINDOW_DAYS} days"
-                  break
-
-          output = os.environ["GITHUB_OUTPUT"]
-          with open(output, "a", encoding="utf-8") as file:
-              file.write(f"duplicate={'true' if duplicate else 'false'}\n")
-
-          if duplicate:
-              print(f"Duplicate job ignored: {reason}")
-          else:
-              print("Job is new according to sent-jobs.json")
-          PY
-
-      - name: Delete duplicate Issue
-        id: delete_duplicate
-        if: steps.dedupe.outputs.duplicate == 'true'
-        continue-on-error: true
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.ISSUE_DELETE_TOKEN }}
-          ISSUE_NODE_ID: ${{ github.event.issue.node_id }}
-        run: |
-          set -euo pipefail
-
-          if [ -z "${GH_TOKEN:-}" ] || [ -z "${ISSUE_NODE_ID:-}" ]; then
-            exit 1
-          fi
-
-          gh api graphql \
-            -f query='
-              mutation($issueId: ID!) {
-                deleteIssue(input: { issueId: $issueId }) {
-                  repository {
-                    nameWithOwner
-                  }
-                }
-              }
-            ' \
-            -f issueId="$ISSUE_NODE_ID"
-
       - name: Send job to API
         id: api
-        if: steps.dedupe.outputs.duplicate != 'true'
         shell: bash
         env:
           JOBS_API_TOKEN: ${{ secrets.JOBS_API_TOKEN }}
@@ -263,62 +124,27 @@ jobs:
               --retry-all-errors
           )"
 
-          if [ "$http_status" != "202" ]; then
-            echo "API returned HTTP $http_status." >&2
-            cat "$response_file" >&2
-            exit 1
-          fi
+          case "$http_status" in
+            202)
+              result="accepted"
+              echo "API accepted the job into its queue."
+              ;;
+            409)
+              result="duplicate"
+              echo "API rejected the job as a duplicate from the last 30 days."
+              ;;
+            *)
+              echo "API returned HTTP $http_status." >&2
+              cat "$response_file" >&2
+              exit 1
+              ;;
+          esac
 
-      - name: Record sent job
-        id: ledger
-        if: steps.api.outcome == 'success'
-        shell: bash
-        run: |
-          set -euo pipefail
+          echo "result=$result" >> "$GITHUB_OUTPUT"
 
-          python3 <<'PY'
-          import json
-
-          with open("payload.json", encoding="utf-8") as file:
-              payload = json.load(file)
-
-          with open("sent-jobs.json", encoding="utf-8") as file:
-              ledger = json.load(file)
-
-          ledger.setdefault("version", 1)
-          jobs = ledger.setdefault("jobs", [])
-          jobs.append({
-              "title": payload["title"],
-              "link": payload["link"],
-              "sent_at": payload["date"][:10],
-          })
-
-          with open("sent-jobs.json", "w", encoding="utf-8") as file:
-              json.dump(ledger, file, ensure_ascii=False, indent=2)
-              file.write("\n")
-          PY
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add sent-jobs.json
-          git commit -m "chore: record sent job"
-
-          for attempt in 1 2 3 4 5; do
-            if git push origin HEAD:main; then
-              exit 0
-            fi
-
-            echo "Push attempt $attempt failed; rebasing and retrying..." >&2
-            git pull --rebase origin main
-            sleep $((attempt * 2))
-          done
-
-          echo "Could not persist sent-jobs.json after retries." >&2
-          exit 1
-
-      - name: Delete delivered Issue
+      - name: Delete processed Issue
         id: delete_issue
-        if: steps.api.outcome == 'success' && steps.ledger.outcome == 'success'
+        if: steps.api.outputs.result != ''
         continue-on-error: true
         shell: bash
         env:
@@ -327,13 +153,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "${GH_TOKEN:-}" ]; then
-            echo "ISSUE_DELETE_TOKEN is not configured." >&2
-            exit 1
-          fi
-
-          if [ -z "${ISSUE_NODE_ID:-}" ]; then
-            echo "Issue Node ID is missing." >&2
+          if [ -z "${GH_TOKEN:-}" ] || [ -z "${ISSUE_NODE_ID:-}" ]; then
             exit 1
           fi
 
@@ -360,24 +180,19 @@ jobs:
           gh issue comment "$ISSUE_URL" --body \
             "❌ Não foi possível publicar esta vaga. Consulte a execução do GitHub Actions para ver o erro. A Issue permaneceu aberta. Depois de corrigir o problema, edite a Issue para disparar uma nova tentativa."
 
-      - name: Report ledger failure
-        if: steps.api.outcome == 'success' && steps.ledger.outcome == 'failure'
+      - name: Report Issue deletion failure
+        if: steps.api.outputs.result != '' && steps.delete_issue.outcome == 'failure'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          API_RESULT: ${{ steps.api.outputs.result }}
         run: |
           set -euo pipefail
 
-          gh issue comment "$ISSUE_URL" --body \
-            "⚠️ A API aceitou a vaga com HTTP 202, mas não foi possível registrá-la em sent-jobs.json. NÃO edite nem reenvie esta Issue antes de confirmar a entrega no Discord, pois isso pode duplicar a vaga."
+          if [ "$API_RESULT" = "duplicate" ]; then
+            body="⚠️ Esta vaga não foi enfileirada porque a API encontrou uma vaga equivalente nos últimos 30 dias. A Issue não pôde ser apagada; corrija o Secret ISSUE_DELETE_TOKEN ou remova-a manualmente."
+          else
+            body="⚠️ A API aceitou a vaga na fila, mas esta Issue não pôde ser apagada. Ela pode já ser publicada no Discord; não reenvie a vaga antes de confirmar."
+          fi
 
-      - name: Report deletion failure
-        if: steps.api.outcome == 'success' && steps.ledger.outcome == 'success' && steps.delete_issue.outcome == 'failure'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-
-          gh issue comment "$ISSUE_URL" --body \
-            "⚠️ A vaga foi aceita pela API e registrada em sent-jobs.json, mas esta Issue não pôde ser apagada. Não edite esta Issue: uma nova tentativa será bloqueada pelo controle de duplicidade."
+          gh issue comment "$ISSUE_URL" --body "$body"

@@ -13,10 +13,11 @@ import (
 	"syscall"
 	"time"
 
-	"ping-jobs/internal/config"
-	"ping-jobs/internal/discord"
-	"ping-jobs/internal/httpapi"
-	"ping-jobs/internal/queue"
+	"ping-work/internal/config"
+	"ping-work/internal/dedupe"
+	"ping-work/internal/discord"
+	"ping-work/internal/httpapi"
+	"ping-work/internal/queue"
 )
 
 const (
@@ -50,6 +51,18 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("destinos carregados", "count", len(destinations))
 
+	databasePath := envOrDefault("DATABASE_PATH", "./data/ping-work.sqlite")
+	dedupeStore, err := dedupe.Open(databasePath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := dedupeStore.Close(); err != nil {
+			logger.Warn("erro ao fechar banco SQLite", "error", err)
+		}
+	}()
+	logger.Info("banco SQLite de deduplicação iniciado", "path", databasePath, "retention", "30 dias")
+
 	gateway, err := discord.ConnectGateway(discordToken, logger)
 	if err != nil {
 		return err
@@ -74,9 +87,14 @@ func run(logger *slog.Logger) error {
 		}(i + 1)
 	}
 	go expireMessages(workerCtx, messageQueue)
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		pruneExpiredJobs(workerCtx, dedupeStore, logger)
+	}()
 
 	address := envOrDefault("HTTP_ADDR", ":8080")
-	api := httpapi.NewServer(apiToken, destinations, messageQueue, logger)
+	api := httpapi.NewServer(apiToken, destinations, messageQueue, dedupeStore, logger)
 	server := &http.Server{
 		Addr:              address,
 		Handler:           api.Handler(),
@@ -178,6 +196,21 @@ func expireMessages(ctx context.Context, messageQueue *queue.Queue) {
 			return
 		case <-ticker.C:
 			messageQueue.Expire()
+		}
+	}
+}
+
+func pruneExpiredJobs(ctx context.Context, dedupeStore *dedupe.Store, logger *slog.Logger) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := dedupeStore.PruneExpired(ctx); err != nil {
+				logger.Error("não foi possível limpar vagas expiradas do SQLite", "error", err)
+			}
 		}
 	}
 }

@@ -11,7 +11,9 @@ FROM alpine:3.22
 
 RUN apk add --no-cache ca-certificates \
     && addgroup -S -g 10001 app \
-    && adduser -S -D -H -u 10001 -G app app
+    && adduser -S -D -H -u 10001 -G app app \
+    && mkdir -p /data \
+    && chown app:app /data
 
 WORKDIR /app
 COPY --from=builder --chown=app:app /out/pingbot /usr/local/bin/pingbot

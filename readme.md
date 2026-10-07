@@ -1,4 +1,4 @@
-# Ping Jobs
+# Ping Work
 
 Bot em Go que recebe vagas por HTTP e publica cada uma em canais do Discord. O bot mantém conexão com o Gateway para aparecer online, mas não lê mensagens nem recebe comandos.
 
@@ -24,15 +24,14 @@ Este guia mostra como configurar o projeto do zero, executá-lo com Docker Compo
 ```mermaid
 flowchart TD
     A[Automação cria Issue com prefixo job] --> B[GitHub Actions valida o JSON]
-    B --> C{Já existe em sent-jobs.json?}
-    C -- Sim --> D[Issue duplicada é descartada]
-    C -- Não --> E[POST para a API do Ping Jobs]
-    E --> F{HTTP 202?}
-    F -- Não --> G[Issue fica aberta com aviso]
-    F -- Sim --> H[Registra a vaga em sent-jobs.json]
-    H --> I[Vaga entra na fila em memória]
-    I --> J[Bot publica nos canais do Discord]
-    H --> K[Action tenta apagar a Issue]
+    B --> C[POST para a API do Ping Work]
+    C --> D{Vaga já consta no SQLite?}
+    D -- Sim --> E[API responde HTTP 409]
+    D -- Não --> F[API registra no SQLite e enfileira]
+    F --> G[API responde HTTP 202]
+    G --> H[Bot publica nos canais do Discord]
+    E --> I[Action tenta apagar a Issue duplicada]
+    G --> J[Action tenta apagar a Issue processada]
 ```
 
 O endpoint recebe um objeto JSON com `title`, `content`, `link` e `date`. No Discord, o título fica clicável, o conteúdo aparece na descrição do embed e a data aparece em um campo próprio.
@@ -94,6 +93,7 @@ Edite `.env` e preencha os valores:
 DISCORD_BOT_TOKEN=cole-aqui-o-token-do-bot
 API_TOKEN=cole-aqui-um-token-aleatorio
 HTTP_PORT=8080
+DATABASE_PATH=./data/ping-work.sqlite
 DISCORD_DESTINATIONS=ID_DO_SERVIDOR:ID_DO_CANAL
 ```
 
@@ -116,6 +116,7 @@ DISCORD_DESTINATIONS=111111111111111111:222222222222222222,333333333333333333:44
 | `DISCORD_DESTINATIONS` | Sim | Pares `guild_id:channel_id` separados por vírgula. |
 | `HTTP_PORT` | Não | Porta da VPS publicada pelo Docker Compose; padrão `8080`. |
 | `HTTP_ADDR` | Não | Endereço de escuta da API; padrão `:8080`. O Compose define `0.0.0.0:8080` no container. |
+| `DATABASE_PATH` | Não | Caminho do SQLite de deduplicação; padrão `./data/ping-work.sqlite`. No Compose, o caminho persistente é `/data/ping-work.sqlite`. |
 
 **Não compartilhe nem faça commit do `.env`.** O arquivo está ignorado pelo Git. Nunca inclua tokens no README, em Issues ou no prompt de uma automação.
 
@@ -130,6 +131,7 @@ set +a
 go run ./cmd/pingbot
 ```
 
+O diretório `./data` é criado automaticamente para armazenar o banco SQLite.
 Você deverá ver logs JSON indicando que o bot conectou ao Gateway e que o servidor HTTP iniciou. Deixe o processo em execução para manter o bot online.
 
 Em outro terminal, verifique a API:
@@ -168,6 +170,7 @@ docker compose -f compose.yml down
 ```
 
 O serviço usa `restart: unless-stopped`, então o Docker o reinicia após uma falha ou reinicialização da VPS. O Compose publica a porta indicada por `HTTP_PORT` (por padrão, `8080`).
+O SQLite fica no volume persistente `ping_work_data`, então o histórico de deduplicação sobrevive a reinicializações e atualizações. `docker compose down` mantém esse volume; não use `docker compose down -v` se quiser preservar o histórico.
 
 ### Disponibilizar a API com HTTPS
 
@@ -211,6 +214,7 @@ Uma resposta `202 Accepted` significa que a vaga entrou na fila do bot. Ela aind
 | --- | --- |
 | `GET /healthz` | `204 No Content` se o processo HTTP estiver ativo. |
 | `POST /messages` | `202 Accepted` quando a vaga válida entra na fila. Exige `Authorization: Bearer <API_TOKEN>`. |
+| `POST /messages` | `409 Conflict` quando a URL ou o título normalizado já foi aceito nos últimos 30 dias. |
 
 O título aceita até 256 caracteres, `content` até 4096, `link` até 2048 e `date` até 1024. O link precisa ser HTTP ou HTTPS.
 
@@ -265,10 +269,9 @@ O corpo deve ser somente um objeto JSON válido:
 Em **Actions → Publish job to jobs.zelchi.com**, acompanhe estas etapas:
 
 1. O workflow valida campos, tipos, URL e limites.
-2. Consulta `sent-jobs.json` e descarta automaticamente vagas já enviadas.
-3. Envia apenas vagas novas para a API e exige HTTP `202`.
-4. Depois do `202`, registra a vaga em `sent-jobs.json`.
-5. Só então tenta apagar permanentemente a Issue.
+2. Envia a vaga para a API, que consulta o banco SQLite persistente.
+3. A API responde HTTP `202` e enfileira uma vaga nova, ou responde `409` quando encontra duplicidade.
+4. O workflow tenta apagar permanentemente a Issue após qualquer uma dessas respostas.
 
 Se a API falhar, a Issue fica aberta com um comentário de erro e pode ser editada depois de corrigir o problema. Se a API aceitar a vaga, mas o PAT não conseguir apagar a Issue, ela fica aberta com um aviso. Nesse segundo caso, **não edite nem reenvie a Issue antes de confirmar a entrega no Discord**, porque a vaga pode já ter sido publicada.
 
@@ -283,7 +286,7 @@ Para cada vaga nova, crie uma Issue:
 - link oficial e data em texto, por exemplo `2026-09-30`;
 - nenhum token, cabeçalho de autorização ou bloco Markdown.
 
-A exclusão remove o histórico da Issue, mas `sent-jobs.json` preserva o registro das vagas efetivamente enviadas. A automação deve consultar esse arquivo antes de reportar ou criar uma nova Issue.
+O SQLite fica no servidor do bot e não precisa ser exposto à automação. Ela pode continuar conferindo cargo, empresa e URL antes de criar a Issue; a API também bloqueia duplicatas caso a automação envie uma repetida.
 
 ## 8. Usar uma automação do ChatGPT
 
@@ -315,22 +318,21 @@ O ChatGPT não precisa receber `API_TOKEN`, `JOBS_API_TOKEN` nem `ISSUE_DELETE_T
 
 ## Controle de duplicidade
 
-O arquivo `sent-jobs.json` funciona como histórico persistente das vagas já aceitas pela API. Antes de publicar uma nova Issue `[job]`, o workflow compara a vaga com esse histórico.
+O arquivo SQLite no servidor funciona como histórico persistente das vagas aceitas pela API. O workflow não precisa fazer checkout do repositório nem gravar commits para manter esse histórico.
 
 A deduplicação usa duas regras:
 
-- URL canônica igual: a vaga é considerada duplicada mesmo quando a URL contém parâmetros de rastreamento diferentes.
-- Mesmo título (cargo + empresa) enviado nos últimos 60 dias: a vaga também é considerada duplicada, protegendo contra links alternativos para a mesma oportunidade.
+- URL canônica igual: a vaga é considerada duplicada mesmo quando a URL contém parâmetros de rastreamento conhecidos diferentes.
+- Mesmo título normalizado: a vaga também é considerada duplicada, protegendo contra links alternativos para a mesma oportunidade.
 
-As execuções de publicação são serializadas com um único grupo de `concurrency`, evitando que duas Issues iguais passem pela verificação ao mesmo tempo.
+Cada registro expira após 30 dias. A API apaga registros expirados ao iniciar, durante novas requisições e em uma limpeza periódica. O banco começa vazio: vagas registradas pelo mecanismo anterior não são importadas.
 
-Depois que a API responde com HTTP `202`, o workflow registra a vaga em `sent-jobs.json` antes de apagar a Issue. Se a gravação do histórico falhar, a Issue permanece aberta e recebe um aviso para evitar reenvio acidental.
-
-Ao pesquisar novas vagas, use `sent-jobs.json` como fonte de verdade para saber o que já foi efetivamente enviado ao pipeline.
+Quando a API responde `409 Conflict`, o workflow entende que a vaga já foi aceita anteriormente e tenta apagar a Issue repetida. Para operar mais de uma réplica do bot, todas devem compartilhar o mesmo banco SQLite em armazenamento compatível; o Compose deste projeto inicia uma única réplica.
 
 ## Limites e comportamento da fila
 
 - A fila fica somente na memória do processo; reiniciar ou parar o container apaga as vagas pendentes.
+- O histórico de deduplicação fica no SQLite persistente e é mantido por 30 dias.
 - Cada vaga fica pendente por no máximo 10 minutos e é removida após entrega a todos os destinos ou expiração.
 - A fila aceita até 1000 vagas pendentes.
 - Se o envio falhar em algum canal, o bot tenta novamente somente os destinos pendentes enquanto a vaga não expirar.
@@ -344,10 +346,11 @@ Ao pesquisar novas vagas, use `sent-jobs.json` como fonte de verdade para saber 
 | Erro ao iniciar por configuração | Confira se `API_TOKEN`, `DISCORD_BOT_TOKEN` e `DISCORD_DESTINATIONS` estão preenchidos. |
 | API retorna `401` | O cabeçalho Bearer não corresponde ao `API_TOKEN` configurado na aplicação. |
 | API retorna `400` | Confira se o corpo é JSON válido, contém somente os quatro campos e usa uma URL HTTP/HTTPS. |
+| API retorna `409` | A vaga tem URL canônica ou título normalizado igual ao de uma vaga aceita nos últimos 30 dias. |
 | API retorna `503` | A fila está cheia; veja os logs e aguarde processamento ou expiração. |
 | Vaga não aparece no Discord | Confira se o bot está no servidor correto, se os IDs são do servidor/canal e se ele tem `Send Messages` e `Embed Links`. |
 | Action falha antes do POST | Confira o JSON da Issue, o prefixo `[job]` e o Secret `JOBS_API_TOKEN`. |
-| Action recebeu `202`, mas a Issue ficou aberta | Confira `ISSUE_DELETE_TOKEN`, acesso ao repositório e permissão **Issues: Read and write**. Não edite a Issue até confirmar se a vaga já chegou ao Discord. |
+| Action recebeu `202` ou `409`, mas a Issue ficou aberta | Confira `ISSUE_DELETE_TOKEN`, acesso ao repositório e permissão **Issues: Read and write**. Para `202`, confirme a publicação antes de reenviar; para `409`, a API já identificou uma vaga repetida. |
 
 ## Segurança
 

@@ -16,7 +16,7 @@ func ConnectGateway(token string, logger *slog.Logger) (*Gateway, error) {
 	if err != nil {
 		return nil, fmt.Errorf("criar sessão Gateway: %w", err)
 	}
-	// O bot não precisa receber eventos de guild, mensagens ou presença.
+
 	session.LogLevel = discordgo.LogWarning
 	session.ShouldReconnectOnError = true
 	session.Identify.Intents = discordgo.IntentsNone
