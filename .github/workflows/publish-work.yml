@@ -94,12 +94,12 @@ jobs:
         id: api
         shell: bash
         env:
-          WORKS_API_TOKEN: ${{ secrets.WORKS_API_TOKEN }}
+          WORK_API_TOKEN: ${{ secrets.WORK_API_TOKEN }}
         run: |
           set -euo pipefail
 
-          if [ -z "${WORKS_API_TOKEN:-}" ]; then
-            echo "WORKS_API_TOKEN is not configured." >&2
+          if [ -z "${WORK_API_TOKEN:-}" ]; then
+            echo "WORK_API_TOKEN is not configured." >&2
             exit 1
           fi
 
@@ -114,7 +114,7 @@ jobs:
               --write-out "%{http_code}" \
               --request POST \
               --url "$API_URL" \
-              --header "Authorization: Bearer $WORKS_API_TOKEN" \
+              --header "Authorization: Bearer $WORK_API_TOKEN" \
               --header "Content-Type: application/json" \
               --data-binary @payload.json \
               --connect-timeout 10 \

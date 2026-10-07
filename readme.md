@@ -242,7 +242,7 @@ No repositório do GitHub, confira em **Settings → General → Features** se *
 
 Abra **Settings → Secrets and variables → Actions → New repository secret** e crie estes dois valores:
 
-#### `WORKS_API_TOKEN`
+#### `WORK_API_TOKEN`
 
 Use o mesmo valor configurado em `API_TOKEN` na VPS. O workflow envia esse token no cabeçalho Bearer para autenticar o POST.
 
@@ -326,7 +326,7 @@ Exemplo do corpo:
 }
 ```
 
-O ChatGPT não precisa receber `API_TOKEN`, `WORKS_API_TOKEN` nem `ISSUE_DELETE_TOKEN`; os dois últimos ficam nos GitHub Actions Secrets.
+O ChatGPT não precisa receber `API_TOKEN`, `WORK_API_TOKEN` nem `ISSUE_DELETE_TOKEN`; os dois últimos ficam nos GitHub Actions Secrets.
 
 ## Controle de duplicidade
 
@@ -361,7 +361,7 @@ Quando a API responde `409 Conflict`, o workflow entende que a vaga já foi acei
 | API retorna `409` | A vaga tem URL canônica ou título normalizado igual ao de uma vaga aceita nos últimos 30 dias. |
 | API retorna `503` | A fila está cheia; veja os logs e aguarde processamento ou expiração. |
 | Vaga não aparece no Discord | Confira se o bot está no servidor correto, se os IDs são do servidor/canal e se ele tem `Send Messages` e `Embed Links`. |
-| Action falha antes do POST | Confira o JSON da Issue, o prefixo `[work]` e o Secret `WORKS_API_TOKEN`. |
+| Action falha antes do POST | Confira o JSON da Issue, o prefixo `[work]` e o Secret `WORK_API_TOKEN`. |
 | Action recebeu `202` ou `409`, mas a Issue ficou aberta | Confira `ISSUE_DELETE_TOKEN`, acesso ao repositório e permissão **Issues: Read and write**. Para `202`, confirme a publicação antes de reenviar; para `409`, a API já identificou uma vaga repetida. |
 
 ## Segurança
